@@ -1,0 +1,42 @@
+# Gem build artifacts
+*.gem
+*.rbc
+/pkg/
+
+# Bundler
+/.bundle/
+/vendor/bundle/
+
+# Test coverage & generated documentation
+/coverage/
+/doc/
+/.yardoc/
+/_yardoc/
+
+# Temporary, cache, and log files
+/tmp/
+/log/
+*.log
+.byebug_history
+.irb_history
+.pry_history
+.rake_tasks~
+
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Editor & language server caches
+.ruby-lsp/
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
