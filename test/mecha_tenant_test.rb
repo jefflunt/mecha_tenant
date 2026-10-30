@@ -3,6 +3,7 @@
 require "test_helper"
 require "active_support/core_ext/object/blank"
 require "active_support/core_ext/string/inflections"
+require "active_job"
 
 class MechaTenantTest < Minitest::Test
   DummyControllerBase = Class.new do
@@ -11,6 +12,17 @@ class MechaTenantTest < Minitest::Test
       instance_methods(false).map(&:to_s)
     end
     include MechaTenant::Controller
+  end
+
+  class TenantJob < ActiveJob::Base
+    include MechaTenant::JobContext
+    class << self
+      attr_accessor :results
+    end
+
+    def perform
+      self.class.results << MechaTenant.tenant_scope("EmailMessage")
+    end
   end
 
   def setup
@@ -167,5 +179,53 @@ class MechaTenantTest < Minitest::Test
     assert_equal :global_model_in_tenant_scope, violations[1].kind
     assert_equal "SvcOption", violations[1].model
     assert_equal 4, violations[1].line
+  end
+
+  def test_with_tenant_scopes_non_http_code_and_restores_previous_tenant
+    MechaTenant.configure do |config|
+      config.config_path = @sample_config
+      config.define_scope("EmailMessage") { |u| "scoped_messages_for_#{u}" }
+    end
+
+    assert_raises(MechaTenant::TenantMissingError) { MechaTenant.tenant_scope("EmailMessage") }
+    assert_raises(MechaTenant::TenantMissingError) { MechaTenant.with_tenant(nil) {} }
+
+    MechaTenant.with_tenant("user_a") do
+      assert_equal "scoped_messages_for_user_a", MechaTenant.tenant_scope("EmailMessage")
+
+      MechaTenant.with_tenant("user_b") do
+        assert_equal "scoped_messages_for_user_b", MechaTenant.tenant_scope("EmailMessage")
+      end
+      assert_equal "user_a", MechaTenant.current_tenant
+
+      assert_raises(RuntimeError) { MechaTenant.with_tenant("user_b") { raise "boom" } }
+      assert_equal "user_a", MechaTenant.current_tenant
+    end
+
+    assert_nil MechaTenant.current_tenant
+  end
+
+  def test_job_context_carries_enqueue_tenant_into_perform
+    MechaTenant.configure do |config|
+      config.config_path = @sample_config
+      config.define_scope("EmailMessage") { |u| "scoped_messages_for_#{u}" }
+    end
+
+    ActiveJob::Base.queue_adapter = :test
+    ActiveJob::Base.logger = Logger.new(nil)
+    TenantJob.results = []
+
+    MechaTenant.with_tenant("user_a") { TenantJob.perform_later }
+    enqueued = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+    assert_equal ["user_a"], enqueued["mecha_tenant"]
+
+    # Running the job while another tenant is active must not leak that tenant in.
+    MechaTenant.with_tenant("user_b") { ActiveJob::Base.execute(enqueued) }
+    assert_equal ["scoped_messages_for_user_a"], TenantJob.results
+
+    TenantJob.perform_later
+    assert_raises(MechaTenant::TenantMissingError) do
+      ActiveJob::Base.execute(ActiveJob::Base.queue_adapter.enqueued_jobs.last)
+    end
   end
 end

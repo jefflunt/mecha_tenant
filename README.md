@@ -105,6 +105,30 @@ class Admin::DashboardsController < ApplicationController
 end
 ```
 
+#### Outside requests: jobs, console and rake
+
+There is no request to read the tenant from, so set it explicitly. `MechaTenant.tenant_scope` resolves against it and raises `MechaTenant::TenantMissingError` when none is set:
+
+```ruby
+MechaTenant.with_tenant(user) do
+  MechaTenant.tenant_scope(EmailMessage).where(unread: true).count
+end
+```
+
+To carry the tenant into background jobs, include `MechaTenant::JobContext`. The tenant active at enqueue time is serialized with the job (GlobalID for Active Record models) and restored around `perform`; a job enqueued without one runs without one:
+
+```ruby
+class ApplicationJob < ActiveJob::Base
+  include MechaTenant::JobContext
+end
+
+class ApplicationController < ActionController::Base
+  around_action { |_, action| MechaTenant.with_tenant(current_user, &action) }
+end
+```
+
+Only wrap actions where `current_user` is always present; `with_tenant(nil)` raises.
+
 ### 4. Rake Tasks & Auditing
 
 `mecha_tenant` automatically registers Rake tasks via its Railtie:
