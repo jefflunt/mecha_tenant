@@ -105,7 +105,36 @@ class Admin::DashboardsController < ApplicationController
 end
 ```
 
-### 4. Rake Tasks & Auditing
+### 4. Non-HTTP Execution Contexts (Background Jobs, Console & Rake Tasks)
+
+For code executing outside an HTTP request lifecycle (ActiveJob workers, Rake tasks, and `rails console`), `mecha_tenant` provides explicit context helpers backed by `ActiveSupport::IsolatedExecutionState`:
+
+```ruby
+# 1. Block-scoped tenant execution (nestable and exception-safe):
+MechaTenant.with_tenant(user) do
+  MechaTenant.tenant_scope(EmailMessage).where(unread: true).count
+end
+
+# 2. Explicit system/unscoped mode with mandatory audit reason:
+MechaTenant.system_scope(reason: "Quarterly tax aggregation") do
+  MechaTenant.tenant_scope(EmailMessage).count
+end
+
+# 3. Interactive Rails console helper:
+MechaTenant.set_current_tenant(User.first)
+MechaTenant.tenant_scope(EmailMessage).count
+MechaTenant.clear_current_tenant!
+```
+
+To automatically propagate the active tenant across `ActiveJob` enqueue and execution boundaries, include `MechaTenant::JobContext`:
+
+```ruby
+class ApplicationJob < ActiveJob::Base
+  include MechaTenant::JobContext
+end
+```
+
+### 5. Rake Tasks & Auditing
 
 `mecha_tenant` automatically registers Rake tasks via its Railtie:
 
