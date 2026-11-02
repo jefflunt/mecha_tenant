@@ -66,7 +66,14 @@ module MechaTenant
     def tenant_scope(model_class)
       tenant_method = MechaTenant.configuration.tenant_method
       tenant = respond_to?(tenant_method, true) ? send(tenant_method) : nil
-      scope = MechaTenant.registry.scope_for(model_class, tenant)
+      tenant = MechaTenant.current_tenant if tenant.nil?
+
+      scope = if tenant.nil? && MechaTenant.system_scoped?
+        MechaTenant.tenant_scope(model_class)
+      else
+        MechaTenant.registry.scope_for(model_class, tenant)
+      end
+
       @_mecha_tenant_scoped_models ||= []
       @_mecha_tenant_scoped_models << model_class.to_s
       scope

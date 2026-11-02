@@ -168,4 +168,132 @@ class MechaTenantTest < Minitest::Test
     assert_equal "SvcOption", violations[1].model
     assert_equal 4, violations[1].line
   end
+
+  def test_with_tenant_system_scope_and_console_helpers
+    MechaTenant.configure do |config|
+      config.config_path = @sample_config
+      config.define_scope("EmailMessage") { |u| "scoped_messages_for_#{u}" }
+    end
+
+    assert_raises(MechaTenant::TenantMissingError) { MechaTenant.tenant_scope("EmailMessage") }
+    assert_raises(MechaTenant::TenantMissingError) { MechaTenant.with_tenant(nil) {} }
+    assert_raises(ArgumentError) { MechaTenant.with_tenant("user_a") }
+
+    MechaTenant.with_tenant("user_a") do |tenant|
+      assert_equal "user_a", tenant
+      assert_equal "user_a", MechaTenant.current_tenant
+      assert_equal "scoped_messages_for_user_a", MechaTenant.tenant_scope("EmailMessage")
+
+      MechaTenant.with_tenant("user_b") do
+        assert_equal "scoped_messages_for_user_b", MechaTenant.tenant_scope("EmailMessage")
+      end
+      assert_equal "user_a", MechaTenant.current_tenant
+
+      assert_raises(RuntimeError) do
+        MechaTenant.with_tenant("user_b") { raise "error in nested block" }
+      end
+      assert_equal "user_a", MechaTenant.current_tenant
+    end
+
+    assert_nil MechaTenant.current_tenant
+
+    # Explicit system_scope escape hatch
+    assert_raises(ArgumentError) { MechaTenant.system_scope(reason: "") {} }
+    assert_raises(ArgumentError) { MechaTenant.system_scope(reason: "Valid reason") }
+
+    MechaTenant.system_scope(reason: "Quarterly tax aggregation") do
+      assert MechaTenant.system_scoped?
+      assert_equal "Quarterly tax aggregation", MechaTenant.system_scope_reason
+      assert_equal "EmailMessage", MechaTenant.tenant_scope("EmailMessage")
+      assert_raises(MechaTenant::GlobalModelScopeError) { MechaTenant.tenant_scope("SvcOption") }
+      assert_raises(MechaTenant::UnregisteredModelError) { MechaTenant.tenant_scope("Unknown") }
+    end
+    refute MechaTenant.system_scoped?
+
+    # Console helpers
+    assert_raises(MechaTenant::TenantMissingError) { MechaTenant.set_current_tenant(nil) }
+    MechaTenant.set_current_tenant("console_user")
+    assert_equal "scoped_messages_for_console_user", MechaTenant.tenant_scope("EmailMessage")
+    MechaTenant.clear_current_tenant!
+    assert_nil MechaTenant.current_tenant
+  end
+
+  def test_job_context_serializes_and_restores_enqueue_tenant
+    MechaTenant.configure do |config|
+      config.config_path = @sample_config
+      config.define_scope("EmailMessage") { |u| "scoped_messages_for_#{u}" }
+    end
+
+    dummy_job_base = Class.new do
+      class << self
+        def before_enqueue(&block)
+          @before_enqueue_callbacks ||= []
+          @before_enqueue_callbacks << block
+        end
+
+        def around_perform(&block)
+          @around_perform_callbacks ||= []
+          @around_perform_callbacks << block
+        end
+
+        def before_enqueue_callbacks
+          @before_enqueue_callbacks || []
+        end
+
+        def around_perform_callbacks
+          @around_perform_callbacks || []
+        end
+      end
+
+      def serialize
+        {}
+      end
+
+      def deserialize(_job_data); end
+
+      def enqueue_and_serialize
+        self.class.before_enqueue_callbacks.each { |cb| cb.call(self) }
+        serialize
+      end
+
+      def execute_from_payload(payload, &perform_block)
+        deserialize(payload)
+        cbs = self.class.around_perform_callbacks
+        if cbs.any?
+          cbs.first.call(self, perform_block)
+        else
+          perform_block.call
+        end
+      end
+    end
+
+    job_class = Class.new(dummy_job_base) do
+      include MechaTenant::JobContext
+    end
+
+    payload_a = MechaTenant.with_tenant("user_a") { job_class.new.enqueue_and_serialize }
+    assert_equal ["user_a"], payload_a["mecha_tenant"]
+
+    # Executing while user_b is active still scopes to user_a and restores user_b afterwards
+    observed = nil
+    MechaTenant.with_tenant("user_b") do
+      job_class.new.execute_from_payload(payload_a) do
+        observed = MechaTenant.tenant_scope("EmailMessage")
+      end
+      assert_equal "user_b", MechaTenant.current_tenant
+    end
+    assert_equal "scoped_messages_for_user_a", observed
+
+    # Job enqueued without a tenant executes without a tenant (closed by default)
+    payload_nil = job_class.new.enqueue_and_serialize
+    assert_nil payload_nil["mecha_tenant"]
+
+    MechaTenant.with_tenant("user_b") do
+      assert_raises(MechaTenant::TenantMissingError) do
+        job_class.new.execute_from_payload(payload_nil) do
+          MechaTenant.tenant_scope("EmailMessage")
+        end
+      end
+    end
+  end
 end

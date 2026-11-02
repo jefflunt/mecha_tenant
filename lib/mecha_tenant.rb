@@ -4,12 +4,16 @@ require_relative "mecha_tenant/version"
 require_relative "mecha_tenant/errors"
 require_relative "mecha_tenant/configuration"
 require_relative "mecha_tenant/registry"
+require_relative "mecha_tenant/context"
+require_relative "mecha_tenant/job_context"
 require_relative "mecha_tenant/controller"
 require_relative "mecha_tenant/auditor/static"
 require_relative "mecha_tenant/auditor/prober"
 require_relative "mecha_tenant/railtie" if defined?(Rails::Railtie)
 
 module MechaTenant
+  extend Context
+
   class << self
     def configuration
       @configuration ||= Configuration.new
@@ -23,6 +27,7 @@ module MechaTenant
     def reset_configuration!
       @configuration = Configuration.new
       @registry = nil
+      clear_current_tenant!
     end
 
     def registry
