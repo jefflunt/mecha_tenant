@@ -113,6 +113,10 @@ end
 # Print all models and controller actions with their tenancy status
 bin/rails mecha_tenant
 
+# Filter output by one or more comma-separated statuses (e.g., violation, skipped, enforced, tenant, global, unmapped)
+bin/rails "mecha_tenant[violation]"
+bin/rails "mecha_tenant[violation,skipped]"
+
 # Statically verify model registry parity and controller AST scoping
 bin/rails mecha_tenant:verify:static
 

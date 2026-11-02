@@ -168,4 +168,143 @@ class MechaTenantTest < Minitest::Test
     assert_equal "SvcOption", violations[1].model
     assert_equal 4, violations[1].line
   end
+
+  def test_mecha_tenant_rake_task_filters_by_status_and_validates_inputs
+    require "rake"
+    Rake::Task.clear
+    Rake::Task.define_task(:environment)
+    load File.expand_path("../lib/tasks/mecha_tenant.rake", __dir__)
+
+    enforced_audit = MechaTenant::Auditor::Static::ActionAudit.new(
+      verb: "GET",
+      path: "/emails/:id",
+      controller: "EmailsController",
+      action: "show",
+      status: :enforced,
+      scopes_used: ["tenant_scope(EmailMessage)"],
+      skip_reason: nil,
+      route_roles: nil
+    )
+
+    skipped_audit = MechaTenant::Auditor::Static::ActionAudit.new(
+      verb: "GET",
+      path: "/admin/dashboard",
+      controller: "Admin::DashboardsController",
+      action: "show",
+      status: :skipped,
+      scopes_used: [],
+      skip_reason: "Admin metrics",
+      route_roles: nil
+    )
+
+    clean_result = MechaTenant::Auditor::Static::Result.new(
+      mapped_models: [
+        { model: "EmailMessage", classification: :tenant, ownership: "email_account.user_id" },
+        { model: "SvcOption", classification: :global, ownership: nil }
+      ],
+      unmapped_models: [],
+      dead_models: [],
+      missing_scopes: [],
+      dead_skip_rules: [],
+      violations: [],
+      action_audits: [enforced_audit, skipped_audit]
+    )
+
+    auditor_singleton = MechaTenant::Auditor::Static.singleton_class
+    auditor_singleton.alias_method :_orig_new_for_issue2, :new
+
+    begin
+      stub_auditor = Object.new
+      stub_auditor.define_singleton_method(:audit) { clean_result }
+      auditor_singleton.define_method(:new) { |*_args| stub_auditor }
+
+      # 1. Filter by [violation,skipped] when 0 violations and 1 skipped exist
+      out, _err = capture_io do
+        Rake::Task["mecha_tenant"].reenable
+        Rake::Task["mecha_tenant"].invoke("violation", "skipped")
+      end
+      assert_includes out, "Admin::DashboardsController#show"
+      assert_includes out, "SKIP: Admin metrics"
+      refute_includes out, "EmailsController#show"
+      refute_includes out, "EmailMessage"
+      assert_includes out, "NO VIOLATIONS FOUND"
+      refute_includes out, "NO SKIPPED FOUND"
+
+      # 2. Filter by [VIOLATION,SKIPPED] when both are empty (case-insensitive)
+      no_skipped_result = MechaTenant::Auditor::Static::Result.new(
+        mapped_models: [{ model: "EmailMessage", classification: :tenant, ownership: "email_account.user_id" }],
+        unmapped_models: [],
+        dead_models: [],
+        missing_scopes: [],
+        dead_skip_rules: [],
+        violations: [],
+        action_audits: [enforced_audit]
+      )
+      stub_auditor.define_singleton_method(:audit) { no_skipped_result }
+
+      out, _err = capture_io do
+        Rake::Task["mecha_tenant"].reenable
+        Rake::Task["mecha_tenant"].invoke("VIOLATION,SKIPPED")
+      end
+      assert_includes out, "NO VIOLATIONS FOUND\nNO SKIPPED FOUND"
+
+      # 3. Duplicate status returns non-zero exit status
+      dup_err = nil
+      out, _err = capture_io do
+        Rake::Task["mecha_tenant"].reenable
+        dup_err = assert_raises(SystemExit) do
+          Rake::Task["mecha_tenant"].invoke("violation", "VIOLATION")
+        end
+      end
+      assert_equal 1, dup_err.status
+      assert_includes out, "Duplicate status filter"
+
+      # 4. Invalid status returns non-zero exit status
+      inv_err = nil
+      out, _err = capture_io do
+        Rake::Task["mecha_tenant"].reenable
+        inv_err = assert_raises(SystemExit) do
+          Rake::Task["mecha_tenant"].invoke("unknown_status")
+        end
+      end
+      assert_equal 1, inv_err.status
+      assert_includes out, "Invalid status filter"
+
+      # 5. Any violation still triggers non-zero exit status even when filtering [skipped]
+      violation_audit = MechaTenant::Auditor::Static::ActionAudit.new(
+        verb: "GET",
+        path: "/orders/:id",
+        controller: "OrdersController",
+        action: "show",
+        status: :violation,
+        scopes_used: [],
+        skip_reason: nil,
+        route_roles: nil
+      )
+      violation_result = MechaTenant::Auditor::Static::Result.new(
+        mapped_models: [{ model: "EmailMessage", classification: :tenant, ownership: "email_account.user_id" }],
+        unmapped_models: [],
+        dead_models: [],
+        missing_scopes: [],
+        dead_skip_rules: [],
+        violations: [],
+        action_audits: [skipped_audit, violation_audit]
+      )
+      stub_auditor.define_singleton_method(:audit) { violation_result }
+
+      viol_err = nil
+      out, _err = capture_io do
+        Rake::Task["mecha_tenant"].reenable
+        viol_err = assert_raises(SystemExit) do
+          Rake::Task["mecha_tenant"].invoke("skipped")
+        end
+      end
+      assert_equal 1, viol_err.status
+      assert_includes out, "Admin::DashboardsController#show"
+      refute_includes out, "OrdersController#show"
+    ensure
+      auditor_singleton.alias_method :new, :_orig_new_for_issue2
+      auditor_singleton.remove_method :_orig_new_for_issue2
+    end
+  end
 end
