@@ -123,7 +123,22 @@ bin/rails mecha_tenant:verify:behavioral
 bin/rails mecha_tenant:verify
 ```
 
-### 5. Dynamic Parallel Matrix Testing in Consuming Apps
+### 5. How Tenancy Enforcement Works
+
+Understanding the boundary between static audit-time checks (CI gates) and runtime request behavior is essential. See the full [Architecture & Enforcement Lifecycle Guide](docs/enforcement.md) for algorithm details and edge-case analysis.
+
+1. **Static Analysis (Prism AST)**:
+   - Inspects `ApplicationRecord` descendants for 100% parity with `config/mecha_tenant.yml` and `define_scope` declarations.
+   - Parses controller action and helper ASTs using Prism to flag any naked model constant reference outside `tenant_scope(Model)` or `current_user` associations.
+   - **CI Gate vs. Runtime**: `rails mecha_tenant` and `rails mecha_tenant:verify:static` act as static CI/build gates. Reporting a `VIOLATION` does **not** alter runtime controller behavior or monkey-patch `ActiveRecord::Base`—instead, it fails the audit task to prevent non-compliant code from deploying.
+2. **Behavioral Probing**:
+   - Evaluates each `define_scope` block against real `@victim` and `@attacker` records to prove tenant scopes include the victim's own records and exclude the attacker's records.
+   - Issues simulated requests as `@attacker` against every enforced `:id` route targeting `@victim` records, asserting HTTP `404` responses and verifying that victim records are neither mutated nor deleted.
+3. **Runtime Impact**:
+   - Calling `tenant_scope(Model)` resolves the relation configured via `define_scope` for `current_user`, causing cross-tenant `.find(params[:id])` lookups to raise `ActiveRecord::RecordNotFound` (rendered by Rails as `404 Not Found`).
+   - Fails closed at runtime by raising `MechaTenant::TenantMissingError` when `current_user` is `nil`, `MechaTenant::GlobalModelScopeError` when called with a `:global` model, and `MechaTenant::UnregisteredModelError` when called with an unmapped model.
+
+### 6. Dynamic Parallel Matrix Testing in Consuming Apps
 
 `mecha_tenant` ships with [`MechaTenant::MatrixTest`](lib/mecha_tenant/matrix_test.rb), which dynamically generates an individual Minitest test method for every registered tenant model (scope isolation) and every enforced parameterized `:id` route (cross-tenant IDOR protection) so they run in parallel across all workers.
 

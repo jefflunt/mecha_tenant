@@ -514,8 +514,13 @@ module MechaTenant
             ctrl_klass.tenant_enforcement_reason_for(action_name)
           end
 
-          action_violations = violations.select do |v|
-            v.controller == ctrl_class_name && v.method_name == action_name
+          relevant_methods = resolve_action_methods(meta, action_name)
+          action_violations = if skip_reason
+            []
+          else
+            violations.select do |v|
+              v.controller == ctrl_class_name && relevant_methods.include?(v.method_name)
+            end
           end
 
           scopes = resolve_action_scopes(meta, action_name)
@@ -545,6 +550,24 @@ module MechaTenant
         end
 
         audits
+      end
+
+      def resolve_action_methods(meta, action_name)
+        methods = Set.new([action_name.to_s])
+        return methods unless meta
+
+        called_helpers = meta[:calls_by_method][action_name.to_s] || []
+        called_helpers.each { |h| methods << h.to_s }
+
+        klass = meta[:klass]
+        if klass && klass.respond_to?(:_process_action_callbacks)
+          klass._process_action_callbacks.each do |cb|
+            next unless cb.kind == :before && cb.filter.is_a?(Symbol)
+            methods << cb.filter.to_s
+          end
+        end
+
+        methods
       end
 
       def resolve_action_scopes(meta, action_name)
