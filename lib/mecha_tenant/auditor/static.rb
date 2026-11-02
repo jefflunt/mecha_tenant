@@ -47,6 +47,10 @@ module MechaTenant
             dead_skip_rules.empty? &&
             violations.empty?
         end
+
+        def violations_found?
+          Array(violations).any? || Array(action_audits).any? { |a| a.status == :violation }
+        end
       end
 
       def initialize(registry = MechaTenant.registry, configuration = MechaTenant.configuration)

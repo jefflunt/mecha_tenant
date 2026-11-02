@@ -168,4 +168,88 @@ class MechaTenantTest < Minitest::Test
     assert_equal "SvcOption", violations[1].model
     assert_equal 4, violations[1].line
   end
+
+  def test_mecha_tenant_rake_task_exits_zero_when_clean_and_non_zero_on_violation
+    require "rake"
+    Rake::Task.clear
+    Rake::Task.define_task(:environment)
+    load File.expand_path("../lib/tasks/mecha_tenant.rake", __dir__)
+
+    clean_audit = MechaTenant::Auditor::Static::ActionAudit.new(
+      verb: "GET",
+      path: "/emails/:id",
+      controller: "EmailsController",
+      action: "show",
+      status: :enforced,
+      scopes_used: ["tenant_scope(EmailMessage)"],
+      skip_reason: nil,
+      route_roles: nil
+    )
+
+    clean_result = MechaTenant::Auditor::Static::Result.new(
+      mapped_models: [{ model: "EmailMessage", classification: :tenant, ownership: "email_account.user_id" }],
+      unmapped_models: [],
+      dead_models: [],
+      missing_scopes: [],
+      dead_skip_rules: [],
+      violations: [],
+      action_audits: [clean_audit]
+    )
+
+    refute clean_result.violations_found?
+
+    auditor_singleton = MechaTenant::Auditor::Static.singleton_class
+    auditor_singleton.alias_method :_orig_new_for_issue1, :new
+
+    begin
+      stub_auditor = Object.new
+      stub_auditor.define_singleton_method(:audit) { clean_result }
+      auditor_singleton.define_method(:new) { |*_args| stub_auditor }
+
+      out, _err = capture_io do
+        Rake::Task["mecha_tenant"].reenable
+        Rake::Task["mecha_tenant"].invoke
+      end
+      assert_includes out, "ENFORCED"
+
+      violation_audit = MechaTenant::Auditor::Static::ActionAudit.new(
+        verb: "GET",
+        path: "/orders/:id",
+        controller: "OrdersController",
+        action: "show",
+        status: :violation,
+        scopes_used: [],
+        skip_reason: nil,
+        route_roles: nil
+      )
+
+      violation_result = MechaTenant::Auditor::Static::Result.new(
+        mapped_models: [{ model: "EmailMessage", classification: :tenant, ownership: "email_account.user_id" }],
+        unmapped_models: [],
+        dead_models: [],
+        missing_scopes: [],
+        dead_skip_rules: [],
+        violations: [],
+        action_audits: [clean_audit, violation_audit]
+      )
+
+      assert violation_result.violations_found?
+
+      stub_auditor.define_singleton_method(:audit) { violation_result }
+
+      err = nil
+      out, _err = capture_io do
+        Rake::Task["mecha_tenant"].reenable
+        err = assert_raises(SystemExit) do
+          Rake::Task["mecha_tenant"].invoke
+        end
+      end
+      assert_includes out, "VIOLATION"
+      assert_equal 1, err.status
+      refute err.success?
+    ensure
+      auditor_singleton.alias_method :new, :_orig_new_for_issue1
+      auditor_singleton.remove_method :_orig_new_for_issue1
+    end
+  end
 end

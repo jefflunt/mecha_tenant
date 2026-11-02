@@ -100,6 +100,8 @@ task mecha_tenant: :environment do
       detail
     )
   end
+
+  exit(1) if result.violations_found?
 end
 
 namespace :mecha_tenant do
